@@ -1,4 +1,4 @@
-const CACHE = 'ramadan-v5-20260218';
+const CACHE = 'ramadan-v6-20260218';
 const STATIC = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
@@ -46,6 +46,9 @@ self.addEventListener('message', e => {
   if (e.data?.type === 'SCHEDULE_NOTIFICATIONS') {
     scheduleAll(e.data.prayers);
   }
+  if (e.data?.type === 'PING_SW') {
+    e.source && e.source.postMessage({ type: 'SW_ALIVE' });
+  }
 });
 
 self.addEventListener('notificationclick', e => {
@@ -69,32 +72,28 @@ function scheduleAll(prayers) {
 
   Object.entries(prayers).forEach(([name, info]) => {
     const diff = info.time - now;
-    if (diff > 0 && diff < 24 * 3600 * 1000) {
-      timers[name] = setTimeout(() => {
-        // 1. System notification
-        self.registration.showNotification(info.title, {
-          body: info.body,
-          icon: './icon-192.png',
-          badge: './icon-192.png',
-          vibrate: [400, 100, 400, 100, 400],
-          tag: name,
-          requireInteraction: true,
-          dir: 'auto',
-        });
+    if (diff <= 0 || diff > 24 * 3600 * 1000) return;
 
-        // 2. Send message to app window to play sound
-        if (soundKeys.includes(name)) {
-          clients.matchAll({ type: 'window', includeUncontrolled: true }).then(allClients => {
-            allClients.forEach(client => {
-              client.postMessage({
-                type: 'PLAY_AZAN',
-                prayerName: info.title,
-                prayerTime: info.body
-              });
-            });
+    timers[name] = setTimeout(() => {
+      // Show system notification
+      self.registration.showNotification(info.title, {
+        body: info.body,
+        icon: './icon-192.png',
+        badge: './icon-192.png',
+        vibrate: [400, 100, 400, 100, 400],
+        tag: name,
+        requireInteraction: soundKeys.includes(name),
+        dir: 'auto',
+      });
+
+      // Trigger azan in any open windows
+      if (soundKeys.includes(name)) {
+        clients.matchAll({ type: 'window', includeUncontrolled: true }).then(allClients => {
+          allClients.forEach(client => {
+            client.postMessage({ type: 'PLAY_AZAN', prayerName: info.title, prayerTime: info.body });
           });
-        }
-      }, diff);
-    }
+        });
+      }
+    }, diff);
   });
 }
