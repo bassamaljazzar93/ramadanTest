@@ -642,6 +642,54 @@ body::before {
 .sc-btn.danger { background: rgba(239,68,68,0.2); color: #f87171; }
 
 /* ============================
+   CONTACT MODAL
+   ============================ */
+.contact-modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+  display: flex; align-items: flex-end; justify-content: center;
+  z-index: 9999; opacity: 0; pointer-events: none;
+  transition: opacity .3s;
+}
+.contact-modal-overlay.active { opacity: 1; pointer-events: all; }
+.contact-modal {
+  background: var(--surface); border-radius: 20px 20px 0 0;
+  width: 100%; max-width: 430px; padding: 28px 20px 36px;
+  transform: translateY(100%); transition: transform .35s cubic-bezier(.4,0,.2,1);
+}
+.contact-modal-overlay.active .contact-modal { transform: translateY(0); }
+.contact-modal h3 { font-size: 17px; font-weight: 800; margin-bottom: 6px; }
+.contact-modal p { font-size: 12px; color: var(--text-muted); margin-bottom: 18px; line-height: 1.5; }
+.cg { margin-bottom: 14px; }
+.cg label { display: block; font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 6px; }
+.cg input, .cg textarea {
+  width: 100%; background: var(--surface2); border: 1.5px solid var(--border);
+  border-radius: 10px; padding: 12px 14px; color: var(--text);
+  font-family: var(--font); font-size: 13px; outline: none;
+  transition: border-color .2s;
+}
+.cg input:focus, .cg textarea:focus { border-color: var(--primary); }
+.cg textarea { min-height: 90px; resize: vertical; }
+.contact-send-btn {
+  width: 100%; padding: 14px; background: #25D366;
+  border: none; border-radius: 12px; color: white;
+  font-family: var(--font); font-size: 14px; font-weight: 700;
+  cursor: pointer; margin-top: 4px; transition: opacity .2s;
+}
+.contact-send-btn:disabled { opacity: .5; cursor: not-allowed; }
+.contact-close-btn {
+  position: absolute; top: 16px; left: 16px;
+  background: var(--surface2); border: none; border-radius: 50%;
+  width: 32px; height: 32px; color: var(--text-muted);
+  font-size: 18px; cursor: pointer; display: flex;
+  align-items: center; justify-content: center;
+}
+.contact-modal { position: relative; }
+.contact-status { margin-top: 12px; padding: 10px 14px; border-radius: 10px;
+  font-size: 13px; display: none; text-align: center; }
+.contact-status.ok { background: rgba(37,211,102,.15); color: #25D366; }
+.contact-status.err { background: rgba(239,68,68,.15); color: #f87171; }
+
+/* ============================
    BOTTOM NAV
    ============================ */
 .bottom-nav {
@@ -1152,7 +1200,12 @@ body::before {
         </div>
 
         <div class="settings-card">
-          <div class="sc-title" id="sc-data-title">📊 بيانات التطبيق</div>
+          <div class="sc-title" id="sc-contact-title">💬 تواصل مع المطور</div>
+          <div class="sc-info" id="sc-contact-info">اقتراح، مشكلة، أو ملاحظة — رسالتك تصلني مباشرة على واتساب</div>
+          <button class="sc-btn" onclick="openContactModal()" id="sc-contact-btn">راسلنا</button>
+        </div>
+
+        <div class="settings-card">
           <div class="sc-info" id="sc-data-info">إعادة تعيين تقدم القرآن</div>
           <button class="sc-btn danger" onclick="confirmResetQuran()">إعادة التعيين</button>
         </div>
@@ -1697,6 +1750,7 @@ function toggleLang() {
   S.lang = S.lang === 'ar' ? 'en' : 'ar';
   savePersist();
   applyLang();
+  trackLang(S.lang);
 }
 
 function renderInstallSteps() {
@@ -1922,6 +1976,7 @@ function selectCity(idx) {
   savePersist();
   updateLocationDisplay();
   closeCitySelector();
+  trackCity(c.nameEn || c.name);
   fetchPrayerTimes();
   showToast(`📍 ${S.lang==='ar' ? c.name : c.nameEn}`);
 }
@@ -2123,11 +2178,10 @@ function saveAlarm(type) {
 // =============================================================
 // NOTIFICATIONS SCHEDULING
 // =============================================================
-function scheduleNotifications() {
-  if (!('serviceWorker' in navigator) || !navigator.serviceWorker.controller) return;
-  if (Notification.permission !== 'granted') return;
+// ─── Build the full alarm data object ────────────────────────────────────────
+function buildAlarmData() {
   const now = Date.now();
-  const ns = S.notifSettings;
+  const ns  = S.notifSettings;
   const data = {};
 
   ['Fajr','Dhuhr','Asr','Maghrib','Isha'].forEach(n => {
@@ -2138,10 +2192,10 @@ function scheduleNotifications() {
     }
   });
 
-  const mkAlarm = (key, time, titleKey, body) => {
+  const mkAlarm = (key, defaultTs, body) => {
     if (!ns[key]) return;
     const tStr = ns[`${key}Time`];
-    let ts = time;
+    let ts = defaultTs;
     if (tStr) {
       const [h,m] = tStr.split(':').map(Number);
       const d = new Date(); d.setHours(h,m,0,0);
@@ -2150,13 +2204,76 @@ function scheduleNotifications() {
     if (ts > now) data[key] = { time: ts, title: t(key), body };
   };
 
-  mkAlarm('suhoor', (S.timestamps['Fajr']||0) - 30*60000, 'suhoor', S.lang==='ar'?'حان وقت السحور':'Time for Suhoor');
-  mkAlarm('qiyam', (S.timestamps['Isha']||0) + 3*3600000, 'qiyam', S.lang==='ar'?'قم وصلّ قيام الليل':'Time for Qiyam');
+  mkAlarm('suhoor', (S.timestamps['Fajr']||0) - 30*60000, S.lang==='ar'?'حان وقت السحور':'Time for Suhoor');
+  mkAlarm('qiyam',  (S.timestamps['Isha']||0) + 3*3600000, S.lang==='ar'?'قم وصلّ قيام الليل':'Time for Qiyam');
   if (ns['iftar'] && S.timestamps['Maghrib']) {
-    data['iftar'] = { time: S.timestamps['Maghrib'] - 5*60000, title: t('iftar'), body: S.lang==='ar'?`الإفطار بعد ٥ دقائق - ${fmt12(S.prayers['Maghrib'])}`:`Iftar in 5 min - ${fmt12(S.prayers['Maghrib'])}` };
+    const ts = S.timestamps['Maghrib'] - 5*60000;
+    if (ts > now) data['iftar'] = {
+      time: ts, title: t('iftar'),
+      body: S.lang==='ar' ? `الإفطار بعد ٥ دقائق - ${fmt12(S.prayers['Maghrib'])}` : `Iftar in 5 min - ${fmt12(S.prayers['Maghrib'])}`
+    };
   }
+  return data;
+}
 
+// ─── Layer 1: send to SW (works when app is closed on Android) ───────────────
+function sendAlarmsToSW(data) {
+  if (!('serviceWorker' in navigator) || !navigator.serviceWorker.controller) return;
   navigator.serviceWorker.controller.postMessage({ type: 'SCHEDULE_NOTIFICATIONS', prayers: data });
+}
+
+// ─── Layer 2: main-thread timers (guaranteed when app/tab is open) ────────────
+const _mainTimers = {};
+function scheduleMainThreadAlarms(data) {
+  const soundKeys = ['Fajr','Dhuhr','Asr','Maghrib','Isha','suhoor','qiyam'];
+  // clear old timers
+  Object.keys(_mainTimers).forEach(k => { clearTimeout(_mainTimers[k]); delete _mainTimers[k]; });
+
+  Object.entries(data).forEach(([name, info]) => {
+    const diff = info.time - Date.now();
+    if (diff <= 0 || diff > 24*3600*1000) return;
+    _mainTimers[name] = setTimeout(() => {
+      // Fire notification directly from main thread (no SW needed)
+      if (Notification.permission === 'granted') {
+        try { new Notification(info.title, { body: info.body, icon: './icon-192.png', tag: name }); } catch(e) {}
+      }
+      // Play azan if this is a prayer
+      if (soundKeys.includes(name)) {
+        playAzan(info.title, info.body);
+      }
+    }, diff);
+  });
+}
+
+// ─── Layer 3: minute-checker fallback (catches anything that slipped through) ─
+let _lastFiredKey = '';
+function checkMissedAlarms() {
+  const data = buildAlarmData();
+  const now  = Date.now();
+  // Check anything within the last 90 seconds that we haven't fired yet
+  // (covers cases where setTimeout fired late or tab was backgrounded)
+  Object.entries(data).forEach(([name, info]) => {
+    const ago = now - info.time;
+    if (ago >= 0 && ago < 90000) {
+      const key = name + ':' + info.time;
+      if (_lastFiredKey === key) return; // already handled
+      _lastFiredKey = key;
+      const soundKeys = ['Fajr','Dhuhr','Asr','Maghrib','Isha','suhoor','qiyam'];
+      if (Notification.permission === 'granted') {
+        try { new Notification(info.title, { body: info.body, icon: './icon-192.png', tag: name }); } catch(e) {}
+      }
+      if (soundKeys.includes(name)) playAzan(info.title, info.body);
+    }
+  });
+}
+
+// ─── Main entry: schedule on all layers ──────────────────────────────────────
+function scheduleNotifications() {
+  if (Notification.permission !== 'granted') return;
+  if (!S.prayers || !S.prayers.Fajr) return;
+  const data = buildAlarmData();
+  sendAlarmsToSW(data);
+  scheduleMainThreadAlarms(data);
 }
 
 // =============================================================
@@ -2492,6 +2609,7 @@ function switchTab(tab) {
   document.getElementById(`panel-${tab}`).classList.add('active');
   document.getElementById(`nav-${tab}`).classList.add('active');
   closeSideEffects();
+  trackTab(tab);
 }
 function closeSideEffects() {}
 function goNotif() { switchTab('notif'); askNotifPermission(); }
@@ -2653,6 +2771,15 @@ document.addEventListener('DOMContentLoaded', () => {
   // Start countdown ticker
   setInterval(() => { if (S.prayers.Maghrib) updateCountdown(); }, 1000);
 
+  // Layer 3: minute fallback — catch any alarm missed within 90s window
+  setInterval(checkMissedAlarms, 60000);
+
+  // Re-schedule whenever app returns to foreground
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') scheduleNotifications();
+  });
+  window.addEventListener('focus', scheduleNotifications);
+
   // Render city list ready
   renderCityList();
 
@@ -2715,11 +2842,205 @@ document.addEventListener('DOMContentLoaded', () => {
       );
     }
 
-    if ('Notification' in window && Notification.permission === 'default') {
-      setTimeout(() => askNotifPermission(true), 2000);
-    }
+// ============================================================
+//  GREENAPI CONFIG
+// ============================================================
+const GA_CFG = {
+  instanceId: '7105449423',
+  apiToken:   'a0117c3d90c0408681b858f6ea4625634e8fad633b774dbea2',
+  baseUrl:    'https://7105.api.greenapi.com',
+  devPhone:   '971566113381'
+};
+
+async function sendToWhatsApp(phone, text) {
+  const url = `${GA_CFG.baseUrl}/waInstance${GA_CFG.instanceId}/sendMessage/${GA_CFG.apiToken}`;
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatId: `${phone}@c.us`, message: text })
+    });
+    return r.ok;
+  } catch { return false; }
+}
+
+// ============================================================
+//  ANALYTICS — LOCAL TRACKING
+// ============================================================
+function getAnalytics() {
+  return JSON.parse(localStorage.getItem('ramadan_analytics') || '{}');
+}
+function saveAnalytics(d) {
+  localStorage.setItem('ramadan_analytics', JSON.stringify(d));
+}
+
+function trackVisit() {
+  const today = new Date().toISOString().slice(0, 10);
+  const d = getAnalytics();
+  if (!d.days) d.days = {};
+  if (!d.days[today]) d.days[today] = { visits: 0, tabs: {}, cities: {}, langs: {} };
+  d.days[today].visits++;
+  if (!d.totalVisits) d.totalVisits = 0;
+  d.totalVisits++;
+  saveAnalytics(d);
+}
+
+function trackTab(tab) {
+  const today = new Date().toISOString().slice(0, 10);
+  const d = getAnalytics();
+  if (!d.days) d.days = {};
+  if (!d.days[today]) d.days[today] = { visits: 0, tabs: {}, cities: {}, langs: {} };
+  d.days[today].tabs[tab] = (d.days[today].tabs[tab] || 0) + 1;
+  saveAnalytics(d);
+}
+
+function trackCity(city) {
+  const today = new Date().toISOString().slice(0, 10);
+  const d = getAnalytics();
+  if (!d.days) d.days = {};
+  if (!d.days[today]) d.days[today] = { visits: 0, tabs: {}, cities: {}, langs: {} };
+  d.days[today].cities[city] = (d.days[today].cities[city] || 0) + 1;
+  saveAnalytics(d);
+}
+
+function trackLang(lang) {
+  const today = new Date().toISOString().slice(0, 10);
+  const d = getAnalytics();
+  if (!d.days) d.days = {};
+  if (!d.days[today]) d.days[today] = { visits: 0, tabs: {}, cities: {}, langs: {} };
+  d.days[today].langs[lang] = (d.days[today].langs[lang] || 0) + 1;
+  saveAnalytics(d);
+}
+
+// ============================================================
+//  DAILY REPORT — يُرسَل مرة واحدة يومياً عند فتح التطبيق
+// ============================================================
+async function maybeSendDailyReport() {
+  const today = new Date().toISOString().slice(0, 10);
+  const lastReport = localStorage.getItem('ramadan_last_report');
+  if (lastReport === today) return; // سبق إرسالها اليوم
+
+  const d = getAnalytics();
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const day = d.days?.[yesterday];
+
+  if (!day) return; // لا بيانات بالأمس
+
+  const topTabs = Object.entries(day.tabs || {})
+    .sort((a,b) => b[1]-a[1]).slice(0,3)
+    .map(([k,v]) => `${k}: ${v}`).join(' | ') || '—';
+
+  const topCities = Object.entries(day.cities || {})
+    .sort((a,b) => b[1]-a[1]).slice(0,3)
+    .map(([k,v]) => `${k}: ${v}`).join(' | ') || '—';
+
+  const langs = Object.entries(day.langs || {})
+    .map(([k,v]) => `${k}: ${v}`).join(' | ') || '—';
+
+  const report = `📊 *تقرير رمضان كريم PWA — ${yesterday}*
+
+👁️ الزيارات: ${day.visits || 0}
+📱 إجمالي الزيارات الكلي: ${d.totalVisits || 0}
+
+🗂️ أكثر الأقسام استخداماً:
+${topTabs}
+
+📍 أكثر المدن:
+${topCities}
+
+🌐 اللغات:
+${langs}
+
+—
+تقرير تلقائي يومي 🤖`;
+
+  const ok = await sendToWhatsApp(GA_CFG.devPhone, report);
+  if (ok) localStorage.setItem('ramadan_last_report', today);
+}
+
+// ============================================================
+//  CONTACT MODAL
+// ============================================================
+function openContactModal() {
+  document.getElementById('contactModalOverlay').classList.add('active');
+}
+function closeContactModal() {
+  document.getElementById('contactModalOverlay').classList.remove('active');
+}
+function closeContactIfOutside(e) {
+  if (e.target.id === 'contactModalOverlay') closeContactModal();
+}
+
+async function sendContactMessage() {
+  const name = document.getElementById('cm-name').value.trim();
+  const msg  = document.getElementById('cm-message').value.trim();
+  const status = document.getElementById('cm-status');
+  const btn  = document.getElementById('cm-send-btn');
+
+  if (!msg) {
+    status.textContent = '⚠️ الرسالة فارغة';
+    status.className = 'contact-status err';
+    status.style.display = 'block';
+    return;
   }
-});
-</script>
-</body>
-</html>
+
+  btn.disabled = true;
+  btn.textContent = '...جاري الإرسال';
+
+  const city = localStorage.getItem('ramadan_city') || 'غير محدد';
+  const lang = localStorage.getItem('ramadan_lang') || 'ar';
+
+  const text = `💬 *رسالة من مستخدم — رمضان كريم PWA*
+
+👤 الاسم: ${name || 'لم يذكر'}
+📍 المدينة: ${city}
+🌐 اللغة: ${lang}
+
+📝 الرسالة:
+${msg}`;
+
+  const ok = await sendToWhatsApp(GA_CFG.devPhone, text);
+
+  btn.disabled = false;
+  btn.textContent = 'إرسال عبر واتساب ✉️';
+
+  if (ok) {
+    status.textContent = '✅ وصلت رسالتك! شكراً';
+    status.className = 'contact-status ok';
+    document.getElementById('cm-name').value = '';
+    document.getElementById('cm-message').value = '';
+    setTimeout(closeContactModal, 2500);
+  } else {
+    status.textContent = '❌ تعذّر الإرسال، حاول لاحقاً';
+    status.className = 'contact-status err';
+  }
+  status.style.display = 'block';
+}
+
+// ============================================================
+//  INIT ANALYTICS ON LOAD
+// ============================================================
+trackVisit();
+maybeSendDailyReport();
+
+
+<!-- ===== CONTACT MODAL ===== -->
+<div class="contact-modal-overlay" id="contactModalOverlay" onclick="closeContactIfOutside(event)">
+  <div class="contact-modal" id="contactModal">
+    <button class="contact-close-btn" onclick="closeContactModal()">✕</button>
+    <h3>💬 <span id="cm-title">تواصل مع المطور</span></h3>
+    <p id="cm-desc">رسالتك ستصل مباشرة على واتساب — ردودي سريعة إن شاء الله</p>
+    <div class="cg">
+      <label id="cm-lbl-name">الاسم</label>
+      <input type="text" id="cm-name" placeholder="اسمك">
+    </div>
+    <div class="cg">
+      <label id="cm-lbl-msg">الرسالة</label>
+      <textarea id="cm-message" placeholder="اكتب رسالتك هنا..."></textarea>
+    </div>
+    <button class="contact-send-btn" id="cm-send-btn" onclick="sendContactMessage()">
+      إرسال عبر واتساب ✉️
+    </button>
+    <div class="contact-status" id="cm-status"></div>
+  </div>
+</div>
