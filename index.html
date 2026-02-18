@@ -1992,13 +1992,16 @@ function updateLocationDisplay() {
 // PRAYER TIMES (Aladhan API)
 // =============================================================
 async function fetchPrayerTimes() {
-  if (!S.lat) return;
+  if (!S.lat) { hideLoading(); return; }
   const method = S.method || document.getElementById('methodSelect').value;
   const now = new Date();
   const dateStr = `${now.getDate()}-${now.getMonth()+1}-${now.getFullYear()}`;
   try {
     const url = `https://api.aladhan.com/v1/timings/${dateStr}?latitude=${S.lat}&longitude=${S.lng}&method=${method}&school=0`;
-    const r = await fetch(url);
+    const ctrl = new AbortController();
+    const fetchTimer = setTimeout(() => ctrl.abort(), 10000); // 10s hard timeout
+    const r = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(fetchTimer);
     const d = await r.json();
     if (d.code === 200) {
       const tm = d.data.timings;
@@ -2016,8 +2019,10 @@ async function fetchPrayerTimes() {
       scheduleNotifications();
     }
   } catch(e) {
-    console.error(e);
-    showToast('❌ ' + (S.lang==='ar'?'فشل تحميل المواقيت':'Failed to load prayer times'));
+    const isTimeout = e.name === 'AbortError';
+    showToast('❌ ' + (S.lang==='ar'
+      ? (isTimeout ? 'انتهت مهلة الاتصال — تحقق من الإنترنت' : 'فشل تحميل المواقيت')
+      : (isTimeout ? 'Connection timed out — check your internet' : 'Failed to load prayer times')));
   }
   hideLoading();
 }
@@ -2811,9 +2816,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   } else {
     // Already initialized - load saved data immediately
+    // Failsafe: hide loading after 12s no matter what (network stuck, API down, etc.)
+    const _loadingFailsafe = setTimeout(() => {
+      hideLoading();
+      showToast('⚠️ ' + (S.lang==='ar' ? 'تعذّر الاتصال — تحقق من الإنترنت وأعد المحاولة' : 'Could not connect — check internet and retry'));
+    }, 12000);
+
     if (S.lat) {
-      fetchPrayerTimes();
+      fetchPrayerTimes().finally(() => clearTimeout(_loadingFailsafe));
     } else {
+      clearTimeout(_loadingFailsafe);
       hideLoading();
       openCitySelector();
     }
